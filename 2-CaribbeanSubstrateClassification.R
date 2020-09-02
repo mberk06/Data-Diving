@@ -1,6 +1,24 @@
-# Author: Michael Berk
-# Date: Summer 2020
-# Descrtiption: unsupervised clssification of reefs
+#' Author: Michael Berk
+#' Date: Summer 2020
+#' Descrtiption: unsupervised clssification of reefs
+#' 
+#'     In this file we explore unsupervised classifications of Caribbean reefs using K-means.
+#'     These classification models are fit using substrate values collected by Reef Check. See 
+#'     post for documentation of data and collection methods. 
+#'     
+#'     Sections
+#'     1. Helper: helper functions called later
+#'     2. Exploration: unorganized exploration that informed later analysis
+#'     3. Clustering Exploration: exploration centered around k-means clustering
+#'     4. Final: code that was used to develop the graphs in the post
+#'     
+#'     Notes:
+#'     - The motivation for developing clustering algorithms is the lack of a consistant TS. For dive
+#'       sites there are rarely repeat dives, so we are currently aggregating using a time frame for 
+#'       all reefs in the Caribbean. However, this averages out a ton of signal. If we can instead cluster
+#'       all reefs by "type," we can create a more consistant time series.
+#'     - The results were interesting but did not address the above question. More subject matter calls
+#'       will probably need to be made to create intuitive groupings of reefs that allows for TS analysis.
 
 pacman::p_load(ggplot2) 
 pacman::p_load(reshape2) # melt
