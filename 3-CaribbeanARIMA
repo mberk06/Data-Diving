@@ -1,0 +1,445 @@
+#' Author: Michael Berk
+#'  Date: Summer 2020
+#' Descrtiption: create two univariate HC TS models and compare
+#' 
+#'     This file is used to model hard coral data collected by Reef Check using ARIMA. Note 
+#'     that Facebook's prophet model was also fit, but because it focuses on man-made trends, 
+#'     such as weekday trends, it was quickly outperformed by ARIMA. That being said, it wasn't
+#'     rigorously tuned. 
+#'     
+#'     This module is broken up in the following sections:
+#'     1. Helpers: helper functions 
+#'     2. Plot Aggregations and Differences: plots that were used for epxlanatory purposes in 
+#'        the post. Their parameters and structure were determined in other sections.
+#'     3. Data Transformations and Order Selection: this section was centered around exploring 
+#'        the data and finding good selections for the ARIMA orders. None of these produced 
+#'        visualizations used in the post. 
+#'     4. ARIMA Train: here the ARIMA models were trained using the information gathered in the
+#'        above section.
+#'     5. ARIMA Predict: predcition code that was used to develop forecasts based on different
+#'        ARIMA and data configurations. The final forecast used in the post was an ARIMA(2,2,2)
+#'        with a dummy sequnce (1:nrows) fitted on the annual data. 
+#'        
+#'     In this file we have close to "maximized" a univariate ARIMA model. Going forward, we will 
+#'     explore the following areas and pursue those with potential:
+#'     - Multivariate ARIMA. Note this comes with many problems for all data aggergations < annual. 
+#'     - Generalized Additive TS Model.
+#'     - Mapping key variable associations without a lag then forecasting those variables to predict
+#'       hard coral.
+#'     - Forecast substrate codes and organism counts. 
+
+pacman::p_load(ggplot2) 
+pacman::p_load(forecast) # ARIMA
+pacman::p_load(aTSA) # dickey fuller test
+install.packages('nonlinearTseries')
+library('nonlinearTseries')
+pacman::p_load(prophet) # FB prophet
+
+# set wd based on user
+if (dir.exists("/Users/michaelberk")) {
+  setwd('~/Documents/Ocean Analysis/')
+}
+
+# setup data
+source(paste0(getwd(), '/Scripts/setupData.R'))
+
+############
+############
+# Helpers
+############
+############
+tsPlot <- function(y, title, timeFrame, nDiffs = 0) {
+  #' Create ggplot TS plot with yearly aggregtion for a given column
+  #' 
+  #' @param y (character) col name to aggregate and plot
+  #' @param title (character) title of col name to go in ggtitle
+  #' @param timeFrame (character) time frame for aggergation
+  #' @param nDiffs (numeric) number of differences to perform
+  
+  # create title vars
+  ylab = 'Percent Cover'
+  title2 = ''
+  
+  # create df
+  adf = aggDF(df, y, timeFrame = timeFrame)
+  names(adf) <- c('DATE', 'Y', 'N')
+  
+  # difference
+  if (nDiffs != 0) {
+    for (d in 1:nDiffs) {
+      adf[2:dim(adf)[1], 'Y'] <- diff(adf[,'Y'])
+      adf <- adf[2:dim(adf)[1],]
+    }
+  }
+  
+  # convert to percent
+  if (y %in% subsetCols('substrate')) {
+    adf[,2] <- adf[,2]*100
+  }
+  
+  # create lm
+  lm <- lm(Y ~ DATE, data = adf, weights = N)
+  predicted_df <- data.frame(y_hat = predict(lm, adf), DATE = adf$DATE)
+  
+  # create plot 
+  p <- ggplot(data = adf, aes(x = DATE, y = Y)) + 
+    geom_line(color = blue, size = 1) + 
+    theme_minimal() + xlab('') + ylab(ylab) +
+    ggtitle(paste0(title, title2)) + 
+    theme(axis.text.x = element_text(angle = 45, vjust = .8, size = 10), axis.text.y = element_text(size=12),
+          plot.title = element_text(size = 14)) + 
+    geom_line(color=red, data = predicted_df, aes(x=DATE, y=y_hat), size = 1)
+  
+  # add x labs
+  if (timeFrame == 'YEAR') {
+    p <- p + scale_x_continuous(breaks = round(seq(min(adf$DATE), max(adf$DATE), by = 2),1))
+  } else {
+    p <- p + scale_x_date(date_breaks = "2 years" , date_labels = "%Y") 
+  }
+  
+  p
+}
+
+############
+############
+# Plot Aggregations and Differences
+############
+############
+########## Other ############
+# daily
+tsPlot('HC', 'Daily Aggregation of Hard Coral', timeFrame = 'DATE')
+
+############# Aggs #############
+# monthly
+tsPlot('HC', 'Monthly Aggregation of Hard Coral', timeFrame = 'MONTH')
+
+# quarterly
+tsPlot('HC', 'Quarterly Aggregation of Hard Coral', timeFrame = 'QUARTER')
+
+# annual
+tsPlot('HC', 'Annual Aggregation of Hard Coral', timeFrame = 'YEAR')
+
+############### Diffs ###########
+tsPlot('HC', 'Annual Aggregation of Hard Coral (diff = 1)', timeFrame = 'YEAR', nDiffs = 1)
+
+tsPlot('HC', 'Annual Aggregation of Hard Coral (diff = 2)', timeFrame = 'YEAR', nDiffs = 2)
+
+############### ACF/PACF ###########
+# get data diffs 
+adf <- aggDF(df, 'HC','YEAR')
+adf$HC[2:dim(adf)[1]] <- diff(adf$HC)
+adf <- adf[2:dim(adf)[1],]
+adf$HC[2:dim(adf)[1]] <- diff(adf$HC)
+adf <- adf[2:dim(adf)[1],]
+acf(adf$HC, main = 'ACF for Hard Coral Aggregated Annually')
+pacf(adf$HC, main = 'PACF for Hard Coral Aggregated Annually')
+
+
+############
+############
+# Data Transformations and Order Selection
+############
+############
+########## daily ############
+# conclusion: too much variance without site aggergation
+# plot data 
+plot(df$DATE, df$HC, type='l')
+abline(lm(HC~DATE, data = df), col='red')
+
+# plot first difference (still has non-constant variance)
+temp <- df
+temp$HC[2:dim(temp)[1]] <- diff(temp$HC)
+temp <- temp[2:dim(temp)[1],]
+plot(temp$DATE, temp$HC, type='l')
+abline(lm(HC~DATE, data = temp), col='red')
+
+########## weekly ############
+# conclusion: too much variance without site aggergation
+# plot data 
+temp <- aggDF(df, 'HC', 'WEEK')
+plot(temp$DATE, temp$HC, type='l')
+abline(lm(HC~DATE, data = temp), col='red')
+
+# plot first difference (also still has non-constant variance in 2009)
+temp$HC[2:dim(temp)[1]] <- diff(temp$HC)
+temp <- temp[2:dim(temp)[1],]
+plot(temp$DATE, temp$HC, type='l')
+abline(lm(HC~DATE, data = temp), col='red')
+
+########## monthly ############
+# conculsion: use with first difference with ARMA(3, 1)
+# interesting to note also there is a sig lag a 6 
+
+# plot data 
+temp <- aggDF(df, 'HC', 'MONTH')
+#temp$HC <-log(temp$HC)
+plot(temp$DATE, temp$HC, type='l')
+abline(lm(HC~DATE, data = temp), col='red')
+scatter.smooth(temp$DATE, y = temp$HC)
+
+# plot first difference (variance looks better)
+temp$HC[2:dim(temp)[1]] <- diff(temp$HC)
+temp <- temp[2:dim(temp)[1],]
+plot(temp$DATE, temp$HC, type='l')
+abline(lm(HC~DATE, data = temp), col='red')
+
+# check stationarity 
+adf.test(temp$HC) # stationary on all 3 methods
+
+# get orders
+Pacf(temp$HC, lag.max = 50) # AR: 3 (quarter)
+Acf(temp$HC, lag.max = 50) # MA: 1
+
+# plot second difference (seems to be overdifference, so not used)
+temp$HC[2:dim(temp)[1]] <- diff(temp$HC, 1)
+temp <- temp[2:dim(temp)[1],]
+plot(temp$DATE, temp$HC, type='l')
+abline(lm(HC~DATE, data = temp), col='red')
+
+########## quarter ############
+# conlcusion: doing quarterly doesn't add information to monthly, so will not use. However, the 
+#             the differencing results look reasonable (but with very inconsistant variance)
+# plot data 
+temp <- aggDF(df, 'HC', 'QUARTER')
+#temp$HC <- log(temp$HC)
+plot(temp$DATE, temp$HC, type='l')
+abline(lm(HC~DATE, data = temp), col='red')
+scatter.smooth(temp$DATE, y = temp$HC)
+
+# plot first difference (variance very bad)
+temp$HC[2:dim(temp)[1]] <- diff(temp$HC)
+temp <- temp[2:dim(temp)[1],]
+plot(temp$DATE, temp$HC, type='l')
+abline(lm(HC~DATE, data = temp), col='red')
+
+# check stationarity 
+adf.test(temp$HC) # stationary on all 3 methods 
+
+# get orders
+Pacf(temp$HC) # AR: 4 
+Acf(temp$HC) # MA: 1
+
+# plot second difference 
+temp$HC[2:dim(temp)[1]] <- diff(temp$HC, 1)
+temp <- temp[2:dim(temp)[1],]
+plot(temp$DATE, temp$HC, type='l')
+abline(lm(HC~DATE, data = temp), col='red')
+
+# get orders
+Pacf(temp$HC) # AR: 5 
+Acf(temp$HC) # MA: 2
+
+
+########## annual ############
+# conclusion: use ARIMA (2,2,2) but should have less power than monthly
+
+# plot data 
+temp <- aggDF(df, 'HC', 'YEAR')
+#temp$HC <- log(temp$HC)
+plot(temp$DATE, temp$HC, type='l')
+abline(lm(HC~DATE, data = temp), col='red')
+scatter.smooth(temp$DATE, y = temp$HC)
+
+# plot first difference (variance very bad)
+temp$HC[2:dim(temp)[1]] <- diff(temp$HC)
+temp <- temp[2:dim(temp)[1],]
+plot(temp$DATE, temp$HC, type='l')
+abline(lm(HC~DATE, data = temp), col='red')
+
+# check stationarity 
+adf.test(temp$HC) # stationary on method 1 and 2, but has trend
+
+# plot second difference (good stationarity except for first year)
+temp$HC[2:dim(temp)[1]] <- diff(temp$HC, 1)
+temp <- temp[2:dim(temp)[1],]
+plot(temp$DATE, temp$HC, type='l')
+abline(lm(HC~DATE, data = temp), col='red')
+
+# check stationarity 
+adf.test(temp$HC) # stationary on all 3 methods
+
+# get orders
+Pacf(temp$HC) # AR: 2 
+Acf(temp$HC) # MA: 2
+
+############
+############
+# ARIMA Train
+############
+############
+############### monthly ##########
+# Model: ARIMA(3,1,1) as determined above
+
+# get aggDF and perform diff (for evaluation)
+adf <- aggDF(df, 'HC', 'MONTH')
+adf$HC <- adf$HC*100
+
+# create x variable
+x <- 1:dim(adf)[1]
+
+# fit ARIMA
+arimaMonth <- Arima(adf$HC, order = c(3,1,1), seasonal = list(order=c(3,0,1),period=3), method = 'ML', xreg = x)
+#kt <- keenanTest(adf$HC) # there is evidence for non-linear
+arimaMonth <- Arima(adf$HC, order = c(3,1,1), method = 'ML', xreg = x)
+
+# get r-square
+cor(fitted(arimaMonth),adf$HC)^2 # 0.452
+plot(fitted(arimaMonth),adf$HC, xlab = 'Fitted Values (% cover)', ylab = 'True Values (% cover)', main = 'ARIMA(3,1,1)')
+
+# plot residuals
+checkresiduals(arimaMonth)
+
+############### quarter ##########
+# Model: ARIMA(4,1,1) as determined above
+# Note: run for exploration purposes
+
+# get aggDF and perform diff (for evaluation) 
+adf <- aggDF(df, 'HC', 'QUARTER')
+adf$HC[2:dim(adf)[1]] <- diff(adf$HC, 1)
+adf <- adf[2:dim(adf)[1],]
+
+# fit ARIMA
+arimaQuarter <- Arima(adf$HC, order = c(3,0,1), method = 'ML')
+
+# get r-square
+cor(fitted(arimaQuarter),adf$HC)^2 # 0.513
+
+############### annual ##########
+# Model: ARIMA(2,2,2) as determined above
+
+# get aggDF and perform diff (for evaluation)
+adf <- aggDF(df, 'HC', 'YEAR')
+#kt <- keenanTest(adf$HC) # there no is evidence for non-linear
+
+# fit ARIMA
+arimaYear <- Arima(adf$HC, order = c(2,2,2), method = 'ML')
+
+# get r-square
+cor(fitted(arimaYear),adf$HC)^2 # 0.689983
+
+# plot residuals
+checkresiduals(arimaYear)
+
+# plot fitted
+plot(fitted(arimaYear),adf$HC, xlab = 'Fitted Values (% cover)', ylab = 'True Values (% cover)', main = 'ARIMA(2,2,2)')
+plot(adf$DATE, fitted(arimaYear), type = 'l', col = yellow , main = 'ARIMA(2,2,2) for Annual Aggregation',
+     xlab = 'Year', ylab = 'Hard Coral Percent Cover')
+points(adf$DATE, fitted(arimaYear), col = yellow)
+lines(adf$DATE, adf$HC, type = 'l', col = blue)
+points(adf$DATE, adf$HC, col = blue)
+legend(2012, 0.3, legend=c("True", "Fitted"),
+       col=c(blue, yellow), lty=1, cex=0.8)
+
+############
+############
+# Prophet Train
+############
+############
+############## monthly ################
+# create df
+adf <- aggDF(df, 'HC', 'MONTH')
+dfP <- data.frame(ds = adf$DATE, y = adf$HC)
+dfFit <- data.frame(ds = adf$DATE)
+
+# fit
+p <- prophet(dfP, weekly.seasonality = F, daily.seasonality = F)
+fitted <- predict(p, dfFit)
+plot(p, fitted)
+prophet_plot_components(p, fitted)
+
+# get r square
+cor(dfP$y, fitted$yhat)^2 # 0.143
+
+############## year ################
+# create df
+adf <- aggDF(df, 'HC', 'YEAR')
+adf$DATE <- as.Date(as.character(adf$DATE), format = "%Y")
+dfP <- data.frame(ds = adf$DATE, y = adf$HC)
+dfFit <- data.frame(ds = adf$DATE)
+
+# fit
+p <- prophet(dfP, weekly.seasonality = F, daily.seasonality = F, yearly.seasonality = F)
+fitted <- predict(p, dfFit)
+plot(p, fitted)
+prophet_plot_components(p, fitted)
+
+# get r square
+cor(dfP$y, fitted$yhat)^2 # 0.27
+
+###############
+###############
+# ARIMA Predict
+###############
+###############
+################### TESTING ################
+# run testing accuracy 
+cutoffs <- c('2016-01-01','2016-07-01','2017-01-01','2017-07-01','2018-01-01','2018-07-01')
+
+# tuning params
+nPeriods <- 5
+timeFrame <- 'YEAR'
+
+# create adf 
+adf <- aggDF(df, 'HC', timeFrame = timeFrame)
+#Xadf <- aggDF(df, 'RC', timeFrame = timeFrame)$RC
+if (timeFrame == 'YEAR') {
+  adf$DATE <- as.Date(as.character(adf$DATE), format = "%Y") # comment out for monthly
+}
+
+# create return vals vector
+accuracies <- c()
+
+for (c in cutoffs) {
+  # create train/test split
+  train <- subset(adf, DATE < as.Date(c))
+  test <- subset(adf, DATE >= as.Date(c))[1:nPeriods,]
+  
+  # convert to TS
+  train <- ts(train[,2], start = 1, end = dim(train)[1])
+  test <- ts(test[,2], start = 1, end = dim(test)[1])
+  
+  # fit ARIMA 
+  if (timeFrame == 'MONTH') {
+    fit <- Arima(train, order = c(3,1,1), method = 'ML', seasonal = list(order=c(1,0,1),period=12))
+  } else {
+    fit <- Arima(train, order = c(2,2,2), method = 'ML', xreg = 1:length(train))
+  }
+  
+  # get training r square
+  print(cor(fitted(fit),train)^2)
+  
+  # forecast
+  preds <- forecast::forecast(fit, h = nPeriods, xreg=length(train):(length(train) + nPeriods), level = c(67,90,95))
+  
+  # get accuracy
+  if (timeFrame == 'MONTH') {
+    accuracies <- c(accuracies, cor(preds$mean, test))
+    #qqplot(preds$mean, test[1:nPeriods,2])
+  } else { # calculate residuals
+    accuracies <- c(accuracies, mean(preds$mean - test))
+  }
+  
+  # plot preds
+  plot(preds, xlab = 'Index', ylab = 'Hard Coral Percent Cover')
+}
+
+summary(accuracies)
+
+############### Run Once ##############
+# set number of future periods to predict
+nPeriods <- 20
+
+# create data
+adf <- aggDF(df, 'HC', timeFrame = timeFrame)
+adf$DATE <- as.Date(as.character(adf$DATE), format = "%Y") 
+adf$HC <- adf$HC * 100
+
+# fit model and predict
+fit <- Arima(adf$HC, order = c(2,2,2), method = 'ML', xreg = 1:length(adf$HC))
+preds <- forecast::forecast(fit, h = nPeriods, xreg=length(adf$HC):(length(adf$HC) + nPeriods), level = c(67,90,95))
+
+# get r-square (sanity check)
+cor(fitted(fit), adf$HC)^2 # 0.689
+
+# plot preds
+plot(preds, xlab = 'Index', ylab = 'Hard Coral Percent Cover')
